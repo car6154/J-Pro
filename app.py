@@ -53,7 +53,6 @@ if 'my_ledger_data' not in st.session_state:
     else:
         st.session_state.my_ledger_data = pd.DataFrame(columns=['등록일', '차량번호', '제조사', '차량명', '세부모델', '연식', '주행거리', '매입가', '판매가', '특이사항'])
 
-# 옵션 이름 카탈로그 메모리 캐시 (API 호출 최소화)
 if 'option_catalog_cache' not in st.session_state:
     st.session_state.option_catalog_cache = {}
 
@@ -87,7 +86,7 @@ class DataProcessor:
         df = df.copy()
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 🔥 1. 기가 막힌 자동 매핑 엔진 (엑셀 컬럼 이름이 달라도 찰떡같이 찾아냄)
+        # 🔥 1. 기가 막힌 자동 매핑 엔진
         rename_dict = {}
         price_candidates = {"할인적용가": 1, "지점판매가": 2, "판매가": 3, "가격": 4, "매입가": 5}
         best_price_col = None
@@ -96,11 +95,12 @@ class DataProcessor:
         for col in df.columns:
             clean_col = str(col).replace(" ", "").lower()
             if any(x in clean_col for x in ["제조사", "브랜드", "메이커"]): rename_dict[col] = "제조사"
+            elif any(x in clean_col for x in ["차종", "차량명", "모델"]): rename_dict[col] = "차량명"
             elif "세부모델" in clean_col: rename_dict[col] = "세부모델"
             elif "상태" in clean_col: rename_dict[col] = "상태"
             elif any(x in clean_col for x in ["등록일", "연식"]): rename_dict[col] = "연식"
             elif "주행거리" in clean_col: rename_dict[col] = "주행거리"
-            elif any(x in clean_col for x in ["경과일수", "재고"]): rename_dict[col] = "재고" 
+            elif any(x in clean_col for x in ["경과일", "재고"]): rename_dict[col] = "재고" 
             elif "성능" in clean_col: rename_dict[col] = "성능일"
             elif any(x in clean_col for x in ["url", "링크", "웹페이지", "사이트", "link"]): rename_dict[col] = "링크"
             
@@ -125,11 +125,18 @@ class DataProcessor:
         
         target_columns = ['상태', '성능일', '제조사', '차량명', '세부모델', '연식', '주행거리', '판매가', '재고', '사고유무', '추가옵션', '링크', '_carid']
         for col in target_columns:
-            if col not in df.columns: df[col] = ""
+            if col not in df.columns:
+                # 엑셀 데이터의 빈 곳을 예쁘게 처리
+                if col in ['사고유무', '추가옵션', '성능일']: df[col] = "-"
+                elif col == '상태': df[col] = "자사재고"
+                else: df[col] = ""
+                
+        # 엑셀에서 올라온 '상태'가 공란이면 기본값 처리
+        df["상태"] = df["상태"].fillna("자사재고").replace("", "자사재고")
                 
         ordered_df = df[target_columns].copy()
 
-        # 🔥 2. 링크 고장 완벽 해결 (javascript 등 가짜 링크를 차단하여 새로고침 방지)
+        # 🔥 2. 링크 및 데이터 포맷팅 완벽 처리
         if "링크" in ordered_df.columns:
             def fix_url(url):
                 u = str(url).strip()
@@ -162,6 +169,14 @@ class DataProcessor:
                 high_bound = valid_prices.quantile(0.99)
                 ordered_df = ordered_df[(ordered_df["판매가"].isna()) | ((ordered_df["판매가"] >= low_bound) & (ordered_df["판매가"] <= high_bound))]
                 
+        if "재고" in ordered_df.columns:
+            def format_inv(v):
+                v_str = str(v).strip()
+                if v_str.lower() in ['nan', 'none', '']: return "-"
+                try: return str(int(float(v_str)))
+                except: return v_str
+            ordered_df["재고"] = ordered_df["재고"].apply(format_inv)
+
         # 🔥 3. 빈 문자열로 채우되 링크 컬럼의 None은 그대로 두어 새로고침 원천 차단
         ordered_df = ordered_df.fillna("")
         if "링크" in ordered_df.columns:
@@ -191,7 +206,7 @@ class Scraper:
                 try: json_data = res.json()
                 except: pass
             return {"status": res.status_code, "json": json_data}
-        except Exception as e:
+        except Exception:
             return {"status": "error", "json": None}
 
     @staticmethod
@@ -206,7 +221,6 @@ class Scraper:
         opt_str = "없음"
         is_rate_limited = False
 
-        # 1. 차량 상세
         v_resp = Scraper._fetch_json(session, f"https://api.encar.com/v1/readside/vehicle/{c_id}?include=MANAGE,OPTIONS", c_id)
         if v_resp["status"] in [403, 429]: return {"성능일": "⚠️조회실패", "재고": "-", "사고유무": "⚠️조회실패", "추가옵션": "⚠️조회실패", "is_rate_limited": True}
         
@@ -219,7 +233,6 @@ class Scraper:
                 real_id = str(manage.get("dummyVehicleId", c_id))
             applied_codes = v_resp["json"].get("options", {}).get("choice", [])
 
-        # 2. 성능점검
         i_resp = Scraper._fetch_json(session, f"https://api.encar.com/v1/readside/inspection/vehicle/{real_id}", c_id)
         if i_resp["status"] in [403, 429]: return {"성능일": "⚠️조회실패", "재고": "-", "사고유무": "⚠️조회실패", "추가옵션": "⚠️조회실패", "is_rate_limited": True}
         
@@ -248,7 +261,6 @@ class Scraper:
             perf_date = "미검사/사진"
             accident_status = "기록부(사진)"
 
-        # 3. 진단
         exch_cnt = 0
         sheet_cnt = 0
         d_resp = Scraper._fetch_json(session, f"https://api.encar.com/v1/readside/diagnosis/vehicle/{real_id}", c_id)
@@ -264,7 +276,6 @@ class Scraper:
             if "기록부(사진)" not in accident_status:
                 accident_status += f" [교환:{exch_cnt} / 판금:{sheet_cnt}]"
 
-        # 4. 추가옵션
         if applied_codes:
             if c_id not in st.session_state.option_catalog_cache:
                 o_resp = Scraper._fetch_json(session, f"https://api.encar.com/v1/readside/vehicles/car/{c_id}/options/choice", c_id)
@@ -498,7 +509,6 @@ if st.sidebar.button("🚀 실시간 엔카 스캔", use_container_width=True):
                 st.session_state.f_brand = new_scan_df['제조사'].iloc[0] if '제조사' in new_scan_df.columns else "전체"
                 st.session_state.f_name = new_scan_df['차량명'].iloc[0]
                 st.session_state.f_sub = new_scan_df['세부모델'].iloc[0]
-                # 스캔 완료 후 필터 초기화
                 st.session_state.f_status = [] 
             st.rerun()
         else: s_text.error(msg)
@@ -671,7 +681,7 @@ with tab_scan:
                 event = st.dataframe(
                     styled_df,
                     column_config={
-                        "상태": st.column_config.TextColumn("상태", width=50),
+                        "상태": st.column_config.TextColumn("상태", width=70),
                         "성능일": st.column_config.TextColumn("성능일", width=70),
                         "제조사": st.column_config.TextColumn("제조사", width=50),
                         "차량명": st.column_config.TextColumn("차량명", width=110),
@@ -679,7 +689,7 @@ with tab_scan:
                         "연식": st.column_config.TextColumn("연식", width=50),
                         "주행거리": st.column_config.NumberColumn("주행거리", format="%d km", width=70),
                         "판매가": st.column_config.NumberColumn("판매가", format="%d 만", width=60),
-                        "재고": st.column_config.TextColumn("재고", width=40),
+                        "재고": st.column_config.TextColumn("재고", width=50),
                         "사고유무": st.column_config.TextColumn("사고유무", width=180),
                         "추가옵션": None,
                         "추가옵션_요약": st.column_config.TextColumn("옵션", width=80),
@@ -728,9 +738,6 @@ with tab_scan:
             else:
                 st.success("👈 좌측 표에서 차량을 클릭하시면\n상세 정보가 여기에 표시됩니다.")
 
-        # ==========================================
-        # 🔥 하단 시세 분석기 부활 및 기능 강화 (Plotly + 제미나이 디테일)
-        # ==========================================
         st.markdown("---")
         st.markdown("### 📊 현재 조건 시세 분석")
         
