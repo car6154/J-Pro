@@ -268,9 +268,11 @@ class Scraper:
             items = d_resp["json"].get("items", [])
             for item in items:
                 r_code = str(item.get("resultCode", ""))
-                r_text = str(item.get("result", ""))
-                if r_code == "EXCHANGE" or "교환" in r_text: exch_cnt += 1
-                elif r_code in ["SHEET_METAL", "REPAIR", "WELDING"] or "판금" in r_text: sheet_cnt += 1
+                # 🔥 어설픈 텍스트 매칭(소모품 교환 등)을 완전히 제거하고 오직 공식 코드값만 신뢰!
+                if r_code == "EXCHANGE": 
+                    exch_cnt += 1
+                elif r_code in ["SHEET_METAL", "REPAIR", "WELDING"]: 
+                    sheet_cnt += 1
                     
         if exch_cnt > 0 or sheet_cnt > 0:
             if "기록부(사진)" not in accident_status:
@@ -373,10 +375,10 @@ class Scraper:
             for car in cars:
                 if car.get("Price", 0) <= 0: continue
                 
-                # 🔥 렌트/리스 및 승계 차량 허수 필터링 (입구컷)
-                if car.get("LeaseType") or car.get("RentType"): continue
-                sep_val = str(car.get("Separation", ""))
-                if "리스" in sep_val or "렌트" in sep_val: continue
+                # 🔥 렌트/리스 완벽 차단! (제이님이 찾아주신 SellType 및 LeaseType 기준 적용)
+                sell_type = str(car.get("SellType", ""))
+                if "렌트" in sell_type or "리스" in sell_type: continue
+                if car.get("LeaseType"): continue 
                 
                 badge_group = car.get('BadgeGroup', '')
                 badge = car.get('Badge', '')
@@ -422,7 +424,6 @@ class Scraper:
                 else:
                     consecutive_failures = 0
                     
-                # 🔥 터보 모드: 스캔 대기 시간을 0.05~0.15초로 대폭 단축
                 time.sleep(random.uniform(0.05, 0.15))
 
             status_text.text("3/3: 스캔 완료. 스마트 데이터 취합 중...")
@@ -454,7 +455,6 @@ class Scraper:
             status_text.text(f"♻️ 실패 매물 원터치 재스캔... ({i+1}/{total_cars}대)")
             progress_bar.progress(int(100 * (i + 1) / total_cars))
             
-            # 🔥 터보 모드: 재스캔 대기 시간도 0.1~0.25초로 단축
             time.sleep(random.uniform(0.1, 0.25)) 
             
             c_id = st.session_state.scan_data.loc[idx, '_carid']
