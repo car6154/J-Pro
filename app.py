@@ -60,13 +60,10 @@ if 'option_catalog_cache' not in st.session_state:
 if 'purchase_route' not in st.session_state:
     st.session_state.purchase_route = "셀프(기본)"
 
-# 🔥 입력값 초기화를 위한 세션 상태 세팅
-if 'l_car_num' not in st.session_state: st.session_state.l_car_num = ""
-if 'l_mil' not in st.session_state: st.session_state.l_mil = 0
-if 'l_sell_price' not in st.session_state: st.session_state.l_sell_price = 0
-if 'l_ext_repair' not in st.session_state: st.session_state.l_ext_repair = 0
-if 'l_manual_fee' not in st.session_state: st.session_state.l_manual_fee = 0
-if 'l_memo' not in st.session_state: st.session_state.l_memo = ""
+# 🔥 입력값 초기화를 위한 리셋 키 (에러 해결의 핵심!)
+if 'form_reset_key' not in st.session_state:
+    st.session_state.form_reset_key = 0
+
 if 'save_success' not in st.session_state: st.session_state.save_success = False
 if 'saved_car_num' not in st.session_state: st.session_state.saved_car_num = ""
 
@@ -434,7 +431,6 @@ class Scraper:
                 else:
                     consecutive_failures = 0
                     
-                # 🔥 울트라 터보 모드 (0.01초 ~ 0.05초)
                 time.sleep(random.uniform(0.01, 0.05))
 
             status_text.text("3/3: 스캔 완료. 스마트 데이터 취합 중...")
@@ -466,7 +462,6 @@ class Scraper:
             status_text.text(f"♻️ 실패 매물 원터치 재스캔... ({i+1}/{total_cars}대)")
             progress_bar.progress(int(100 * (i + 1) / total_cars))
             
-            # 🔥 재스캔도 울트라 터보
             time.sleep(random.uniform(0.05, 0.1)) 
             
             c_id = st.session_state.scan_data.loc[idx, '_carid']
@@ -648,13 +643,16 @@ if st.session_state.save_success:
     st.sidebar.success(f"✅ {st.session_state.saved_car_num} 장부 및 구글시트 저장 완료!")
     st.session_state.save_success = False
 
-l_car_num = st.sidebar.text_input("차량번호 (필수)", key="l_car_num")
-l_mil = st.sidebar.number_input("주행거리 (km)", min_value=0, step=1000, key="l_mil")
+# 🔥 폼 입력칸들에 동적 키(form_reset_key)를 부여하여, 저장 시 에러 없이 통째로 교체되게 만듦
+reset_idx = st.session_state.form_reset_key
+
+l_car_num = st.sidebar.text_input("차량번호 (필수)", key=f"car_num_{reset_idx}")
+l_mil = st.sidebar.number_input("주행거리 (km)", min_value=0, step=1000, key=f"mil_{reset_idx}")
 
 st.sidebar.markdown("---")
 
-l_sell_price = st.sidebar.number_input("판매가 (예상, 만원)", min_value=0, step=10, key="l_sell_price")
-l_ext_repair = st.sidebar.number_input("외판 수리 갯수", min_value=0, step=1, format="%d", key="l_ext_repair")
+l_sell_price = st.sidebar.number_input("판매가 (예상, 만원)", min_value=0, step=10, key=f"sell_{reset_idx}")
+l_ext_repair = st.sidebar.number_input("외판 수리 갯수", min_value=0, step=1, format="%d", key=f"ext_{reset_idx}")
 
 route_options = ["셀프(기본)", "제로", "개인"]
 def update_route():
@@ -664,9 +662,9 @@ l_route = st.sidebar.radio("매입 경로", route_options, index=route_options.i
 
 l_manual_fee = 0
 if l_route == "개인":
-    l_manual_fee = st.sidebar.number_input("매입 수수료 (직접입력, 만원)", min_value=0, step=1, key="l_manual_fee")
+    l_manual_fee = st.sidebar.number_input("매입 수수료 (직접입력, 만원)", min_value=0, step=1, key=f"man_{reset_idx}")
 
-l_margin = st.sidebar.number_input("목표 마진 (만원)", min_value=0, step=10, value=120)
+l_margin = st.sidebar.number_input("목표 마진 (만원)", min_value=0, step=10, value=120, key="margin_key")
 
 name_val = st.session_state.f_name if st.session_state.f_name != "전체" else ""
 is_light_car = any(x in name_val for x in ["모닝", "레이", "스파크", "마티즈", "캐스퍼", "티코"])
@@ -699,7 +697,7 @@ final_target_raw = first_target - purchase_fee
 final_target = int(math.floor(final_target_raw))
 
 st.sidebar.markdown("---")
-if st.session_state.l_sell_price > 0:
+if l_sell_price > 0:
     html_content = f"""
     <div style="background-color: #d1e7dd; border: 1px solid #badbcc; padding: 15px; border-radius: 8px; color: #0f5132; margin-bottom: 15px;">
         <div style="font-size: 1.1em; font-weight: bold; margin-bottom: 5px;">✅ 권장 입찰가(매입가)</div>
@@ -715,10 +713,10 @@ if st.session_state.l_sell_price > 0:
 else:
     st.sidebar.info("💡 판매가를 입력하시면 매입가가 자동 계산됩니다.")
 
-l_memo = st.sidebar.text_area("특이사항 / 메모", height=80, key="l_memo")
+l_memo = st.sidebar.text_area("특이사항 / 메모", height=80, key=f"memo_{reset_idx}")
 
 if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container_width=True):
-    if not st.session_state.l_car_num:
+    if not l_car_num:
         st.sidebar.error("⚠️ 차량번호 필수")
     else:
         brand_val = st.session_state.f_brand if st.session_state.f_brand != "전체" else ""
@@ -727,15 +725,15 @@ if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container
 
         new_record = {
             '등록일': datetime.now().strftime("%y-%m-%d"), 
-            '차량번호': st.session_state.l_car_num, 
+            '차량번호': l_car_num, 
             '제조사': brand_val,
             '차량명': name_val,
             '세부모델': sub_val,
             '연식': year_val,
-            '주행거리': f"{st.session_state.l_mil} km" if st.session_state.l_mil > 0 else "", 
+            '주행거리': f"{l_mil} km" if l_mil > 0 else "", 
             '매입가': final_target, 
-            '판매가': st.session_state.l_sell_price, 
-            '특이사항': f"[{st.session_state.purchase_route}] " + st.session_state.l_memo
+            '판매가': l_sell_price, 
+            '특이사항': f"[{st.session_state.purchase_route}] " + l_memo
         }
         st.session_state.my_ledger_data = pd.concat([st.session_state.my_ledger_data, pd.DataFrame([new_record])], ignore_index=True)
         st.session_state.my_ledger_data.to_csv(LEDGER_FILE, index=False, encoding='utf-8-sig')
@@ -745,15 +743,10 @@ if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container
         except: pass
 
         st.session_state.save_success = True
-        st.session_state.saved_car_num = st.session_state.l_car_num
+        st.session_state.saved_car_num = l_car_num
         
-        st.session_state.l_car_num = ""
-        st.session_state.l_mil = 0
-        st.session_state.l_sell_price = 0
-        st.session_state.l_ext_repair = 0
-        if 'l_manual_fee' in st.session_state:
-            st.session_state.l_manual_fee = 0
-        st.session_state.l_memo = ""
+        # 🔥 에러의 원인이었던 변수 강제 초기화 코드를 지우고, 대신 리셋 키를 +1 올려서 폼 전체를 새걸로 갈아끼웁니다!
+        st.session_state.form_reset_key += 1
         
         st.rerun()
 
