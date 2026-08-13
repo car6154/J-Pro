@@ -64,7 +64,7 @@ class DataProcessor:
     @staticmethod
     def infer_brand(car_name):
         name = str(car_name).strip().upper()
-        if any(x in name for x in ['G70', 'G80', 'G90', 'GV70', 'GV80', 'GV60', '제네시스']): return "제네시스"
+        if any(x in name for x in ['G70', 'G80', 'G90', 'GV70', 'GV80', 'GV60', '제네시스', 'EQ900']): return "제네시스"
         elif any(x in name for x in ['쏘나타', '그랜저', '아반떼', '싼타페', '투싼', '팰리세이드', '캐스퍼', '포터', '스타리아', '스타렉스', '코나', '아이오닉', '베뉴']): return "현대"
         elif any(x in name for x in ['K3', 'K5', 'K7', 'K8', 'K9', '쏘렌토', '스포티지', '카니발', '레이', '모닝', '봉고', '셀토스', '니로', '모하비', 'EV6', 'EV9']): return "기아"
         elif any(x in name for x in ['스파크', '말리부', '트레일블레이저', '트래버스', '콜로라도', '이쿼녹스', '볼트']): return "쉐보레"
@@ -87,19 +87,31 @@ class DataProcessor:
         df = df.copy()
         df = df.loc[:, ~df.columns.duplicated()]
         
+        # 🔥 1. 기가 막힌 자동 매핑 엔진 (엑셀 컬럼 이름이 달라도 찰떡같이 찾아냄)
         rename_dict = {}
+        price_candidates = {"할인적용가": 1, "지점판매가": 2, "판매가": 3, "가격": 4, "매입가": 5}
+        best_price_col = None
+        best_price_rank = 99
+        
         for col in df.columns:
             clean_col = str(col).replace(" ", "").lower()
-            if clean_col in ["제조사", "브랜드", "제조사명", "메이커"]: rename_dict[col] = "제조사"
-            elif clean_col == "세부모델": rename_dict[col] = "세부모델"
-            elif clean_col in ["홈페이지상태", "상태", "판매상태"]: rename_dict[col] = "상태"
-            elif clean_col in ["최초등록일", "연식"]: rename_dict[col] = "연식"
-            elif clean_col in ["주행거리", "주행거리(km)"]: rename_dict[col] = "주행거리"
-            elif clean_col in ["할인적용가", "매입가", "판매가", "지점판매가", "판매가(만원)", "가격"]: rename_dict[col] = "판매가"
-            elif clean_col in ["매입경과일수", "경과일수", "재고일"]: rename_dict[col] = "재고" 
-            elif clean_col in ["성능점검일", "성능일"]: rename_dict[col] = "성능일"
-            # 🔥 4번 문제 해결: 엑셀의 URL, 웹페이지 컬럼을 '링크'로 매핑
-            elif clean_col in ["url", "링크", "웹페이지", "사이트", "link"]: rename_dict[col] = "링크"
+            if any(x in clean_col for x in ["제조사", "브랜드", "메이커"]): rename_dict[col] = "제조사"
+            elif "세부모델" in clean_col: rename_dict[col] = "세부모델"
+            elif "상태" in clean_col: rename_dict[col] = "상태"
+            elif any(x in clean_col for x in ["등록일", "연식"]): rename_dict[col] = "연식"
+            elif "주행거리" in clean_col: rename_dict[col] = "주행거리"
+            elif any(x in clean_col for x in ["경과일수", "재고"]): rename_dict[col] = "재고" 
+            elif "성능" in clean_col: rename_dict[col] = "성능일"
+            elif any(x in clean_col for x in ["url", "링크", "웹페이지", "사이트", "link"]): rename_dict[col] = "링크"
+            
+            # 판매가 후보 찾기
+            for cand, rank in price_candidates.items():
+                if cand in clean_col and rank < best_price_rank:
+                    best_price_col = col
+                    best_price_rank = rank
+                    
+        if best_price_col:
+            rename_dict[best_price_col] = "판매가"
 
         df = df.rename(columns=rename_dict)
         df = df.loc[:, ~df.columns.duplicated()]
@@ -108,7 +120,6 @@ class DataProcessor:
         if "차량명" in df.columns:
             df["제조사"] = df.apply(lambda row: DataProcessor.infer_brand(row["차량명"]) if pd.isna(row["제조사"]) or str(row["제조사"]).strip() == "" else row["제조사"], axis=1)
         
-        # _carid 강제 문자열 처리 (오류 방지)
         if "_carid" not in df.columns: df["_carid"] = ""
         df["_carid"] = df["_carid"].astype(str)
         
@@ -118,11 +129,12 @@ class DataProcessor:
                 
         ordered_df = df[target_columns].copy()
 
-        # 🔥 링크 포맷 강제 보정 (http 추가)
+        # 🔥 2. 링크 고장 완벽 해결 (javascript 등 가짜 링크를 차단하여 새로고침 방지)
         if "링크" in ordered_df.columns:
             def fix_url(url):
                 u = str(url).strip()
-                if u and u not in ["", "nan", "-"] and not u.startswith("http"): return f"https://{u}"
+                if not u or u.lower() in ["nan", "-", "none"] or "javascript" in u.lower(): return None
+                if not u.startswith("http"): return f"https://{u}"
                 return u
             ordered_df["링크"] = ordered_df["링크"].apply(fix_url)
 
@@ -135,28 +147,27 @@ class DataProcessor:
                 return y
             ordered_df["연식"] = ordered_df["연식"].apply(format_year)
             
-        # 🔥 주행거리: 문자열 싹 날리고 숫자만 추출
         if "주행거리" in ordered_df.columns:
             ordered_df["주행거리"] = ordered_df["주행거리"].astype(str).str.replace(r'[^\d.]', '', regex=True)
             ordered_df["주행거리"] = pd.to_numeric(ordered_df["주행거리"], errors='coerce')
         
-        # 🔥 1, 2, 3번 문제 핵심 해결: 판매가 단위 보정 및 아웃라이어 완화
         if "판매가" in ordered_df.columns:
-            # 1. 콤마, 원, 만 등 숫자 이외의 문자 전부 제거
             ordered_df["판매가"] = ordered_df["판매가"].astype(str).str.replace(r'[^\d.]', '', regex=True)
             ordered_df["판매가"] = pd.to_numeric(ordered_df["판매가"], errors='coerce')
-            
-            # 2. 엑셀의 원 단위(예: 19,200,000)를 만원 단위(1920)로 강제 변환 (10만 이상이면 무조건 원 단위로 간주)
             ordered_df["판매가"] = ordered_df["판매가"].apply(lambda x: x / 10000 if pd.notna(x) and x >= 100000 else x)
             
-            # 3. 이상치 컷 기준을 매우 널널하게(1%~99%) 변경하여 스캔 매물 증발 방지
             valid_prices = ordered_df["판매가"].dropna()
             if len(valid_prices) > 10:
                 low_bound = valid_prices.quantile(0.01)
                 high_bound = valid_prices.quantile(0.99)
                 ordered_df = ordered_df[(ordered_df["판매가"].isna()) | ((ordered_df["판매가"] >= low_bound) & (ordered_df["판매가"] <= high_bound))]
                 
-        return ordered_df.fillna("")
+        # 🔥 3. 빈 문자열로 채우되 링크 컬럼의 None은 그대로 두어 새로고침 원천 차단
+        ordered_df = ordered_df.fillna("")
+        if "링크" in ordered_df.columns:
+            ordered_df["링크"] = ordered_df["링크"].replace("", None)
+            
+        return ordered_df
 
 # ==========================================
 # ⚙️ 3. 초정밀 데이터 스크래퍼 엔진
