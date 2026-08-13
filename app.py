@@ -86,7 +86,6 @@ class DataProcessor:
         df = df.copy()
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 🔥 1. 기가 막힌 자동 매핑 엔진
         rename_dict = {}
         price_candidates = {"할인적용가": 1, "지점판매가": 2, "판매가": 3, "가격": 4, "매입가": 5}
         best_price_col = None
@@ -94,9 +93,11 @@ class DataProcessor:
         
         for col in df.columns:
             clean_col = str(col).replace(" ", "").lower()
-            if any(x in clean_col for x in ["제조사", "브랜드", "메이커"]): rename_dict[col] = "제조사"
+            
+            # 🚨 세부모델을 무조건 먼저 찾음
+            if "세부모델" in clean_col: rename_dict[col] = "세부모델"
+            elif any(x in clean_col for x in ["제조사", "브랜드", "메이커"]): rename_dict[col] = "제조사"
             elif any(x in clean_col for x in ["차종", "차량명", "모델"]): rename_dict[col] = "차량명"
-            elif "세부모델" in clean_col: rename_dict[col] = "세부모델"
             elif "상태" in clean_col: rename_dict[col] = "상태"
             elif any(x in clean_col for x in ["등록일", "연식"]): rename_dict[col] = "연식"
             elif "주행거리" in clean_col: rename_dict[col] = "주행거리"
@@ -104,7 +105,6 @@ class DataProcessor:
             elif "성능" in clean_col: rename_dict[col] = "성능일"
             elif any(x in clean_col for x in ["url", "링크", "웹페이지", "사이트", "link"]): rename_dict[col] = "링크"
             
-            # 판매가 후보 찾기
             for cand, rank in price_candidates.items():
                 if cand in clean_col and rank < best_price_rank:
                     best_price_col = col
@@ -126,21 +126,18 @@ class DataProcessor:
         target_columns = ['상태', '성능일', '제조사', '차량명', '세부모델', '연식', '주행거리', '판매가', '재고', '사고유무', '추가옵션', '링크', '_carid']
         for col in target_columns:
             if col not in df.columns:
-                # 엑셀 데이터의 빈 곳을 예쁘게 처리
-                if col in ['사고유무', '추가옵션', '성능일']: df[col] = "-"
+                if col in ['사고유무', '추가옵션', '성능일', '재고']: df[col] = "-"
                 elif col == '상태': df[col] = "자사재고"
                 else: df[col] = ""
                 
-        # 엑셀에서 올라온 '상태'가 공란이면 기본값 처리
         df["상태"] = df["상태"].fillna("자사재고").replace("", "자사재고")
                 
         ordered_df = df[target_columns].copy()
 
-        # 🔥 2. 링크 및 데이터 포맷팅 완벽 처리
         if "링크" in ordered_df.columns:
             def fix_url(url):
                 u = str(url).strip()
-                if not u or u.lower() in ["nan", "-", "none"] or "javascript" in u.lower(): return None
+                if not u or u.lower() in ["nan", "-", "none", ""] or "javascript" in u.lower(): return None
                 if not u.startswith("http"): return f"https://{u}"
                 return u
             ordered_df["링크"] = ordered_df["링크"].apply(fix_url)
@@ -168,16 +165,15 @@ class DataProcessor:
                 low_bound = valid_prices.quantile(0.01)
                 high_bound = valid_prices.quantile(0.99)
                 ordered_df = ordered_df[(ordered_df["판매가"].isna()) | ((ordered_df["판매가"] >= low_bound) & (ordered_df["판매가"] <= high_bound))]
-                
+
         if "재고" in ordered_df.columns:
             def format_inv(v):
                 v_str = str(v).strip()
-                if v_str.lower() in ['nan', 'none', '']: return "-"
+                if v_str.lower() in ['nan', 'none', '', '-']: return "-"
                 try: return str(int(float(v_str)))
                 except: return v_str
             ordered_df["재고"] = ordered_df["재고"].apply(format_inv)
 
-        # 🔥 3. 빈 문자열로 채우되 링크 컬럼의 None은 그대로 두어 새로고침 원천 차단
         ordered_df = ordered_df.fillna("")
         if "링크" in ordered_df.columns:
             ordered_df["링크"] = ordered_df["링크"].replace("", None)
@@ -716,13 +712,18 @@ with tab_scan:
                 st.info(f"**{row['차량명']} {row['세부모델']} ({row['연식']})**")
                 
                 def format_num(val):
-                    try: return f"{int(float(val)):,}"
+                    try: 
+                        if pd.isna(val) or str(val).strip() == "": return "-"
+                        return f"{int(float(val)):,}"
                     except: return val
                 
-                col1, col2, col3 = st.columns(3)
+                # 🔥 글자 잘림(Truncation) 방지를 위해 2칸으로 넓히고 성능일을 밑으로 내렸습니다!
+                col1, col2 = st.columns(2)
                 col1.metric("판매가", f"{format_num(row['판매가'])} 만원")
                 col2.metric("주행거리", f"{format_num(row['주행거리'])} km")
-                col3.metric("성능일", row['성능일'])
+                
+                # 성능일은 공간을 넓게 쓰도록 단독 배치
+                st.metric("성능점검일", row['성능일'])
 
                 st.markdown("---")
                 st.markdown(f"**🛡️ 사고유무:**\n{row['사고유무']}")
