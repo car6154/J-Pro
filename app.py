@@ -56,6 +56,10 @@ if 'my_ledger_data' not in st.session_state:
 if 'option_catalog_cache' not in st.session_state:
     st.session_state.option_catalog_cache = {}
 
+# 매입 경로 자동 저장을 위한 세션 상태
+if 'purchase_route' not in st.session_state:
+    st.session_state.purchase_route = "셀프(기본)"
+
 # ==========================================
 # ⚙️ 2. 데이터 처리 엔진 (띄어쓰기 압착 및 매핑 강화)
 # ==========================================
@@ -268,11 +272,9 @@ class Scraper:
             items = d_resp["json"].get("items", [])
             for item in items:
                 r_code = str(item.get("resultCode", ""))
-                # 🔥 어설픈 텍스트 매칭(소모품 교환 등)을 완전히 제거하고 오직 공식 코드값만 신뢰!
-                if r_code == "EXCHANGE": 
-                    exch_cnt += 1
-                elif r_code in ["SHEET_METAL", "REPAIR", "WELDING"]: 
-                    sheet_cnt += 1
+                # 오직 'EXCHANGE' 코드만 신뢰! 텍스트 오판 차단
+                if r_code == "EXCHANGE": exch_cnt += 1
+                elif r_code in ["SHEET_METAL", "REPAIR", "WELDING"]: sheet_cnt += 1
                     
         if exch_cnt > 0 or sheet_cnt > 0:
             if "기록부(사진)" not in accident_status:
@@ -375,7 +377,7 @@ class Scraper:
             for car in cars:
                 if car.get("Price", 0) <= 0: continue
                 
-                # 🔥 렌트/리스 완벽 차단! (제이님이 찾아주신 SellType 및 LeaseType 기준 적용)
+                # 렌트/리스 완벽 차단!
                 sell_type = str(car.get("SellType", ""))
                 if "렌트" in sell_type or "리스" in sell_type: continue
                 if car.get("LeaseType"): continue 
@@ -615,12 +617,12 @@ if not filtered_df.empty:
         current_f_year = st.sidebar.text_input("연식 검색 (예: 24-05)")
         if current_f_year: filtered_df = filtered_df[filtered_df['연식'].astype(str).str.contains(current_f_year)]
         
+        # 🔥 주행거리 필터 분리! (filtered_df 자체를 깎아내지 않고 슬라이더 값만 가져옵니다)
         if "주행거리" in filtered_df.columns:
             filtered_df["주행거리"] = pd.to_numeric(filtered_df["주행거리"], errors='coerce').fillna(0)
             max_mil = int(filtered_df["주행거리"].max()) if not filtered_df.empty else 0
             if max_mil > 0:
-                current_f_mil = st.sidebar.slider("주행거리 이하 (km)", 0, max_mil, max_mil, step=1000)
-                filtered_df = filtered_df[filtered_df['주행거리'] <= current_f_mil]
+                current_f_mil = st.sidebar.slider("📈 시세분석용 주행거리 이하 (km)", 0, max_mil, max_mil, step=1000)
 
         if "재고" in filtered_df.columns:
             filtered_df['_sort_inv'] = pd.to_numeric(filtered_df['재고'], errors='coerce').fillna(99999)
@@ -628,22 +630,82 @@ if not filtered_df.empty:
 
 st.sidebar.markdown("---")
 
-st.sidebar.markdown("### 📝 장부 간편 저장")
-with st.sidebar.form("quick_ledger_sidebar", clear_on_submit=True):
-    l_car_num = st.text_input("차량번호 (필수)")
-    l_mil = st.number_input("주행거리 (km)", min_value=0, step=1000)
-    l_buy_price = st.number_input("매입가 (만원)", min_value=0, step=10)
-    l_sell_price = st.number_input("판매가 (만원)", min_value=0, step=10)
-    l_memo = st.text_area("특이사항 / 메모", height=80)
-    
-    submit_btn = st.form_submit_button("💾 내 장부 및 구글시트에 저장", use_container_width=True)
+# ==========================================
+# 📝 실시간 장부 자동 계산기 (리얼타임 반응형)
+# ==========================================
+st.sidebar.markdown("### 📝 장부 간편 저장 (자동 계산)")
 
-if submit_btn:
+# 1. 상단 기본 정보
+l_car_num = st.sidebar.text_input("차량번호 (필수)")
+l_mil = st.sidebar.number_input("주행거리 (km)", min_value=0, step=1000)
+
+st.sidebar.markdown("---")
+
+# 2. 계산을 위한 핵심 타점 정보 (요청하신 순서대로 배치)
+l_sell_price = st.sidebar.number_input("판매가 (예상, 만원)", min_value=0, step=10, value=0)
+
+# 🔥 외판수리 값은 소수점 없는 정수(format="%d")로!
+l_ext_repair = st.sidebar.number_input("외판 수리 갯수", min_value=0, step=1, value=0, format="%d")
+
+# 3. 매입 경로 (이전 선택을 자동으로 기억)
+route_options = ["셀프(기본)", "제로", "개인"]
+def update_route():
+    st.session_state.purchase_route = st.session_state._route_selector
+
+l_route = st.sidebar.radio("매입 경로", route_options, index=route_options.index(st.session_state.purchase_route), key="_route_selector", on_change=update_route)
+
+l_manual_fee = 0
+if l_route == "개인":
+    l_manual_fee = st.sidebar.number_input("매입 수수료 (직접입력, 만원)", min_value=0, step=1, value=0)
+
+l_margin = st.sidebar.number_input("목표 마진 (만원)", min_value=0, step=10, value=120)
+
+# 🔥 4. 권장 낙찰가 실시간 역산 로직
+name_val = st.session_state.f_name if st.session_state.f_name != "전체" else ""
+is_light_car = any(x in name_val for x in ["모닝", "레이", "스파크", "마티즈", "캐스퍼", "티코"])
+
+selling_fee = l_sell_price * 0.007
+misc_cost = 15
+ext_cost = l_ext_repair * 13
+
+# 1차 타점 = 판매가 - 판매수수료 - 제경비 - 수리비 - 목표마진
+first_target = l_sell_price - selling_fee - misc_cost - ext_cost - l_margin
+purchase_fee = 0
+
+if l_route == "셀프(기본)":
+    if first_target <= 100: purchase_fee = 7.5
+    elif first_target <= 500: purchase_fee = 18.5
+    elif first_target <= 1000: purchase_fee = 19.0 if is_light_car else 24.5
+    elif first_target <= 3000: purchase_fee = 25.0
+    else: purchase_fee = 36.0
+elif l_route == "제로":
+    if first_target <= 100: purchase_fee = 14.0
+    elif first_target <= 500: purchase_fee = 30.0
+    elif first_target <= 1000: purchase_fee = 30.5 if is_light_car else 36.5
+    elif first_target <= 1500: purchase_fee = 36.5
+    elif first_target <= 3000: purchase_fee = 39.5
+    elif first_target <= 4000: purchase_fee = 47.5
+    else: purchase_fee = 50.5
+elif l_route == "개인":
+    purchase_fee = l_manual_fee
+
+# 최종 매입가 (1차 타점 - 매입수수료)
+final_target = first_target - purchase_fee
+
+# 5. 계산 결과 실시간 출력
+st.sidebar.markdown("---")
+if l_sell_price > 0:
+    st.sidebar.success(f"**✅ 권장 입찰가(매입가): `{final_target:,.1f}` 만원**\n\n(수수료: {purchase_fee}만 / 수리비: {ext_cost}만)")
+else:
+    st.sidebar.info("💡 판매가를 입력하시면 매입가가 자동 계산됩니다.")
+
+l_memo = st.sidebar.text_area("특이사항 / 메모", height=80)
+
+if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container_width=True):
     if not l_car_num:
         st.sidebar.error("⚠️ 차량번호 필수")
     else:
         brand_val = st.session_state.f_brand if st.session_state.f_brand != "전체" else ""
-        name_val = st.session_state.f_name if st.session_state.f_name != "전체" else ""
         sub_val = st.session_state.f_sub if st.session_state.f_sub != "전체" else ""
         year_val = current_f_year if current_f_year else ""
 
@@ -655,9 +717,9 @@ if submit_btn:
             '세부모델': sub_val,
             '연식': year_val,
             '주행거리': f"{l_mil} km" if l_mil > 0 else "", 
-            '매입가': l_buy_price, 
+            '매입가': round(final_target, 1), 
             '판매가': l_sell_price, 
-            '특이사항': l_memo
+            '특이사항': f"[{l_route}] " + l_memo
         }
         st.session_state.my_ledger_data = pd.concat([st.session_state.my_ledger_data, pd.DataFrame([new_record])], ignore_index=True)
         st.session_state.my_ledger_data.to_csv(LEDGER_FILE, index=False, encoding='utf-8-sig')
@@ -693,6 +755,7 @@ with tab_scan:
                     **{'font-size': '1.1em', 'font-weight': 'bold'}
                 ).format(precision=0)
 
+                # 🔥 표(List)는 주행거리 슬라이더에 깎이지 않고 모두 보여줍니다!
                 event = st.dataframe(
                     styled_df,
                     column_config={
@@ -759,19 +822,24 @@ with tab_scan:
         st.markdown("---")
         st.markdown("### 📊 현재 조건 시세 분석")
         
-        valid_prices = pd.to_numeric(filtered_df['판매가'], errors='coerce').dropna()
+        # 🔥 시세 분석기(차트 및 통계)는 주행거리 슬라이더에 맞게 좁혀서 보여줍니다!
+        chart_base = filtered_df.copy()
+        if current_f_mil > 0:
+            chart_base = chart_base[chart_base['주행거리'] <= current_f_mil]
+        
+        valid_prices = pd.to_numeric(chart_base['판매가'], errors='coerce').dropna()
+        
         if not valid_prices.empty:
             min_price = valid_prices.min()
             max_price = valid_prices.max()
             avg_price = valid_prices.mean()
             
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("검색된 매물 수", f"{len(filtered_df)} 대")
+            c1.metric("분석 대상 매물 수", f"{len(chart_base)} 대")
             c2.metric("최저가", f"{int(min_price):,} 만원")
             c3.metric("최고가", f"{int(max_price):,} 만원")
             c4.metric("평균가", f"{int(avg_price):,} 만원")
             
-            chart_base = filtered_df.copy()
             chart_base['주행거리_num'] = pd.to_numeric(chart_base['주행거리'], errors='coerce')
             chart_base['판매가_num'] = pd.to_numeric(chart_base['판매가'], errors='coerce')
             chart_df = chart_base.dropna(subset=['주행거리_num', '판매가_num'])
@@ -828,7 +896,8 @@ with tab_scan:
                     sel_row = filtered_df.iloc[selected_rows_for_chart[0]]
                     sel_km = pd.to_numeric(sel_row['주행거리'], errors='coerce')
                     sel_price = pd.to_numeric(sel_row['판매가'], errors='coerce')
-                    if pd.notna(sel_km) and pd.notna(sel_price):
+                    # 선택된 차량이 차트 기준 안에 들어올 때만 별표 표시
+                    if pd.notna(sel_km) and pd.notna(sel_price) and (current_f_mil == 0 or sel_km <= current_f_mil):
                         fig.add_trace(go.Scatter(
                             x=[sel_km], y=[sel_price],
                             mode='markers',
@@ -857,7 +926,7 @@ with tab_scan:
             else:
                 st.info("유효한 주행거리/판매가 데이터가 없어 차트를 그릴 수 없습니다.")
         else:
-            st.info("시세를 분석할 수 있는 유효한 판매가 데이터가 없습니다.")
+            st.info("현재 설정된 주행거리 기준에 맞는 매물이 없습니다.")
 
     else:
         st.info("👈 좌측 메뉴에서 엑셀을 업로드하거나 엔카 URL을 스캔하여 데이터를 불러와 주세요.")
