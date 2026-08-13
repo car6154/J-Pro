@@ -20,7 +20,7 @@ DB_FILE = "jpro_db.csv"
 LEDGER_FILE = "my_car_ledger.csv"
 INVENTORY_FILE = "autoplus_inventory.csv" 
 COOKIE_FILE = "encar_cookie.txt" 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyLelvMC8GhtFsC4E1ZcTQc7HgyT30JZUF7pkQ2ZmYQ8NJZq1TypMuHUD3BH6ZX2cm3/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyyPeTsI9-TK9niAcxw8c21itSzplbzCi0jXLb61fTlcanCEnJmlC9mjwWMOH8yZfbl/exec"
 
 def load_cookie():
     if os.path.exists(COOKIE_FILE):
@@ -115,7 +115,6 @@ class DataProcessor:
         df = df.rename(columns=rename_dict)
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 🔥 핵심: 차량명과 세부모델의 띄어쓰기를 싹 다 날려서 '더뉴카니발'처럼 하나로 압착
         if "차량명" in df.columns:
             df["차량명"] = df["차량명"].astype(str).str.replace(" ", "", regex=False)
         if "세부모델" in df.columns:
@@ -373,6 +372,12 @@ class Scraper:
             car_data_list = []
             for car in cars:
                 if car.get("Price", 0) <= 0: continue
+                
+                # 🔥 렌트/리스 및 승계 차량 허수 필터링 (입구컷)
+                if car.get("LeaseType") or car.get("RentType"): continue
+                sep_val = str(car.get("Separation", ""))
+                if "리스" in sep_val or "렌트" in sep_val: continue
+                
                 badge_group = car.get('BadgeGroup', '')
                 badge = car.get('Badge', '')
                 badge_detail = car.get('BadgeDetail', '')
@@ -417,7 +422,8 @@ class Scraper:
                 else:
                     consecutive_failures = 0
                     
-                time.sleep(random.uniform(0.3, 0.5))
+                # 🔥 터보 모드: 스캔 대기 시간을 0.05~0.15초로 대폭 단축
+                time.sleep(random.uniform(0.05, 0.15))
 
             status_text.text("3/3: 스캔 완료. 스마트 데이터 취합 중...")
             raw_df = pd.DataFrame(car_data_list)
@@ -448,7 +454,8 @@ class Scraper:
             status_text.text(f"♻️ 실패 매물 원터치 재스캔... ({i+1}/{total_cars}대)")
             progress_bar.progress(int(100 * (i + 1) / total_cars))
             
-            time.sleep(random.uniform(0.5, 0.8)) 
+            # 🔥 터보 모드: 재스캔 대기 시간도 0.1~0.25초로 단축
+            time.sleep(random.uniform(0.1, 0.25)) 
             
             c_id = st.session_state.scan_data.loc[idx, '_carid']
             res = Scraper.fetch_car_detail(session, c_id)
@@ -489,7 +496,6 @@ if st.sidebar.button("📁 엑셀 병합 및 DB 저장", use_container_width=Tru
                 st.session_state.inventory_data = merged_df
             st.session_state.inventory_data.to_csv(INVENTORY_FILE, index=False, encoding='utf-8-sig')
             
-            # 엑셀 업로드 시 필터가 풀리지 않도록 초기화 로직 삭제
             st.rerun()
 
 if st.sidebar.button("🗑️ 저장된 엑셀 DB 지우기", use_container_width=True):
@@ -515,7 +521,6 @@ if st.sidebar.button("🚀 실시간 엔카 스캔", use_container_width=True):
             st.session_state.scan_data = st.session_state.scan_data.drop_duplicates(subset=['_carid'], keep='last').reset_index(drop=True)
             
             if not new_scan_df.empty:
-                # 스캔 결과의 차량명(공백이 압착된 상태)으로 필터 기본값 자동 포커싱
                 st.session_state.f_brand = new_scan_df['제조사'].iloc[0] if '제조사' in new_scan_df.columns else "전체"
                 st.session_state.f_name = new_scan_df['차량명'].iloc[0]
                 st.session_state.f_sub = new_scan_df['세부모델'].iloc[0]
@@ -575,7 +580,6 @@ if not filtered_df.empty:
         filtered_df = pd.DataFrame(columns=filtered_df.columns)
     
     if not filtered_df.empty:
-        # 🔥 필터 제한 해제: 엑셀+스캔 합친 전체 데이터(filtered_df)에서 목록을 뽑아냄
         f_brand_opts = ["전체"] + list(filtered_df['제조사'].dropna().unique())
         if st.session_state.f_brand not in f_brand_opts: st.session_state.f_brand = "전체"
         st.session_state.f_brand = st.sidebar.selectbox("제조사/브랜드", f_brand_opts, index=f_brand_opts.index(st.session_state.f_brand))
@@ -627,10 +631,7 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 📝 장부 간편 저장")
 with st.sidebar.form("quick_ledger_sidebar", clear_on_submit=True):
     l_car_num = st.text_input("차량번호 (필수)")
-    
-    # 🔥 1. 주행거리(km) 수기 입력 필드 신규 추가! 
     l_mil = st.number_input("주행거리 (km)", min_value=0, step=1000)
-    
     l_buy_price = st.number_input("매입가 (만원)", min_value=0, step=10)
     l_sell_price = st.number_input("판매가 (만원)", min_value=0, step=10)
     l_memo = st.text_area("특이사항 / 메모", height=80)
@@ -653,10 +654,7 @@ if submit_btn:
             '차량명': name_val,
             '세부모델': sub_val,
             '연식': year_val,
-            
-            # 🔥 수기로 입력한 주행거리가 장부에 바로 찍히도록 변경
             '주행거리': f"{l_mil} km" if l_mil > 0 else "", 
-            
             '매입가': l_buy_price, 
             '판매가': l_sell_price, 
             '특이사항': l_memo
@@ -704,10 +702,7 @@ with tab_scan:
                         "차량명": st.column_config.TextColumn("차량명", width=110),
                         "세부모델": st.column_config.TextColumn("세부모델", width=140),
                         "연식": st.column_config.TextColumn("연식", width=50),
-                        
-                        # 🔥 2. 주행거리 폭을 강제로 묶어두던 width=70을 없애고 자동 맞춤(Auto-fit) 적용!
                         "주행거리": st.column_config.NumberColumn("주행거리", format="%d km"), 
-                        
                         "판매가": st.column_config.NumberColumn("판매가", format="%d 만", width=60),
                         "재고": st.column_config.TextColumn("재고", width=50),
                         "사고유무": st.column_config.TextColumn("사고유무", width=180),
