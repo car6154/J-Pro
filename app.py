@@ -57,7 +57,7 @@ if 'option_catalog_cache' not in st.session_state:
     st.session_state.option_catalog_cache = {}
 
 # ==========================================
-# ⚙️ 2. 데이터 처리 엔진 (🔥 정규식 강화)
+# ⚙️ 2. 데이터 처리 엔진
 # ==========================================
 class DataProcessor:
     @staticmethod
@@ -94,7 +94,7 @@ class DataProcessor:
         for col in df.columns:
             clean_col = str(col).replace(" ", "").lower()
             
-            # 🚨 세부모델을 무조건 먼저 찾음
+            # 우선순위 부여
             if "세부모델" in clean_col: rename_dict[col] = "세부모델"
             elif any(x in clean_col for x in ["제조사", "브랜드", "메이커"]): rename_dict[col] = "제조사"
             elif any(x in clean_col for x in ["차종", "차량명", "모델"]): rename_dict[col] = "차량명"
@@ -368,9 +368,21 @@ class Scraper:
             car_data_list = []
             for car in cars:
                 if car.get("Price", 0) <= 0: continue
+                # 🔥 세부모델 누락 해결: BadgeGroup, Badge, BadgeDetail을 모두 가져와서 조합
+                badge_group = car.get('BadgeGroup', '')
+                badge = car.get('Badge', '')
+                badge_detail = car.get('BadgeDetail', '')
+                
+                parts = []
+                if badge_group: parts.append(badge_group)
+                if badge and badge not in parts: parts.append(badge)
+                if badge_detail and badge_detail not in parts: parts.append(badge_detail)
+                
+                sub_model_full = " ".join(parts).strip()
+
                 car_data_list.append({
                     "상태": "실시간", "제조사": car.get('Manufacturer', '').strip(),
-                    "차량명": car.get('Model', '').strip(), "세부모델": f"{car.get('Badge', '')} {car.get('BadgeDetail', '')}".strip(), 
+                    "차량명": car.get('Model', '').strip(), "세부모델": sub_model_full, 
                     "연식": str(car.get("FormYear", "")), "주행거리": car.get("Mileage", 0),
                     "판매가": car.get("Price", 0), "성능일": "-", "재고": "-",
                     "사고유무": "-", "추가옵션": "-",
@@ -473,10 +485,7 @@ if st.sidebar.button("📁 엑셀 병합 및 DB 저장", use_container_width=Tru
                 st.session_state.inventory_data = merged_df
             st.session_state.inventory_data.to_csv(INVENTORY_FILE, index=False, encoding='utf-8-sig')
             
-            st.session_state.f_brand = "전체"
-            st.session_state.f_name = "전체"
-            st.session_state.f_sub = "전체"
-            st.session_state.f_status = []
+            # 🔥 엑셀 업로드 시 필터가 풀리지 않도록 초기화 로직(st.session_state.f_brand = "전체" 등) 삭제 완료!
             st.rerun()
 
 if st.sidebar.button("🗑️ 저장된 엑셀 DB 지우기", use_container_width=True):
@@ -561,7 +570,10 @@ if not filtered_df.empty:
         filtered_df = pd.DataFrame(columns=filtered_df.columns)
     
     if not filtered_df.empty:
-        f_brand_opts = ["전체"] + list(filtered_df['제조사'].dropna().unique())
+        # 🔥 필터 메뉴 항목(options)은 무조건 '엔카 스캔(scan_data)' 기준으로만 뽑음
+        filter_base_df = st.session_state.scan_data if not st.session_state.scan_data.empty else filtered_df
+
+        f_brand_opts = ["전체"] + list(filter_base_df['제조사'].dropna().unique())
         if st.session_state.f_brand not in f_brand_opts: st.session_state.f_brand = "전체"
         st.session_state.f_brand = st.sidebar.selectbox("제조사/브랜드", f_brand_opts, index=f_brand_opts.index(st.session_state.f_brand))
         if st.session_state.f_brand != "전체": 
@@ -578,7 +590,7 @@ if not filtered_df.empty:
                 if core in name_str: return f"{core}_{name_str}"
             return name_str
 
-        raw_names = list(filtered_df['차량명'].dropna().unique())
+        raw_names = list(filter_base_df['차량명'].dropna().unique())
         sorted_names = sorted(raw_names, key=get_smart_sort_key)
         f_name_opts = ["전체"] + sorted_names
         
@@ -587,10 +599,14 @@ if not filtered_df.empty:
         if st.session_state.f_name != "전체": 
             filtered_df = filtered_df[filtered_df['차량명'] == st.session_state.f_name]
         
-        f_sub_opts = ["전체"] + list(filtered_df['세부모델'].dropna().unique())
+        # 세부모델 옵션 역시 scan_data 기준으로 뽑되, 현재 선택된 차량명에 맞춰서 뽑음
+        sub_base_df = filter_base_df[filter_base_df['차량명'] == st.session_state.f_name] if st.session_state.f_name != "전체" else filter_base_df
+        f_sub_opts = ["전체"] + list(sub_base_df['세부모델'].dropna().unique())
+        
         if st.session_state.f_sub not in f_sub_opts: st.session_state.f_sub = "전체"
         st.session_state.f_sub = st.sidebar.selectbox("세부모델", f_sub_opts, index=f_sub_opts.index(st.session_state.f_sub))
         if st.session_state.f_sub != "전체": 
+            # 엑셀 데이터가 같이 필터링 되도록 적용 (선택한 기준값이 엑셀과 엔카 양쪽에 모두 적용됨)
             filtered_df = filtered_df[filtered_df['세부모델'] == st.session_state.f_sub]
         
         current_f_year = st.sidebar.text_input("연식 검색 (예: 24-05)")
@@ -717,12 +733,11 @@ with tab_scan:
                         return f"{int(float(val)):,}"
                     except: return val
                 
-                # 🔥 글자 잘림(Truncation) 방지를 위해 2칸으로 넓히고 성능일을 밑으로 내렸습니다!
+                # 🔥 글자 잘림 방지 (2칸으로 가격, 주행거리 / 그 밑에 성능일)
                 col1, col2 = st.columns(2)
                 col1.metric("판매가", f"{format_num(row['판매가'])} 만원")
                 col2.metric("주행거리", f"{format_num(row['주행거리'])} km")
                 
-                # 성능일은 공간을 넓게 쓰도록 단독 배치
                 st.metric("성능점검일", row['성능일'])
 
                 st.markdown("---")
