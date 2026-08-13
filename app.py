@@ -7,6 +7,7 @@ import re
 import os
 import time
 import random
+import math
 from datetime import datetime
 import numpy as np
 import plotly.graph_objects as go
@@ -56,9 +57,18 @@ if 'my_ledger_data' not in st.session_state:
 if 'option_catalog_cache' not in st.session_state:
     st.session_state.option_catalog_cache = {}
 
-# 매입 경로 자동 저장을 위한 세션 상태
 if 'purchase_route' not in st.session_state:
     st.session_state.purchase_route = "셀프(기본)"
+
+# 🔥 입력값 초기화를 위한 세션 상태 세팅
+if 'l_car_num' not in st.session_state: st.session_state.l_car_num = ""
+if 'l_mil' not in st.session_state: st.session_state.l_mil = 0
+if 'l_sell_price' not in st.session_state: st.session_state.l_sell_price = 0
+if 'l_ext_repair' not in st.session_state: st.session_state.l_ext_repair = 0
+if 'l_manual_fee' not in st.session_state: st.session_state.l_manual_fee = 0
+if 'l_memo' not in st.session_state: st.session_state.l_memo = ""
+if 'save_success' not in st.session_state: st.session_state.save_success = False
+if 'saved_car_num' not in st.session_state: st.session_state.saved_car_num = ""
 
 # ==========================================
 # ⚙️ 2. 데이터 처리 엔진 (띄어쓰기 압착 및 매핑 강화)
@@ -272,7 +282,6 @@ class Scraper:
             items = d_resp["json"].get("items", [])
             for item in items:
                 r_code = str(item.get("resultCode", ""))
-                # 오직 'EXCHANGE' 코드만 신뢰! 텍스트 오판 차단
                 if r_code == "EXCHANGE": exch_cnt += 1
                 elif r_code in ["SHEET_METAL", "REPAIR", "WELDING"]: sheet_cnt += 1
                     
@@ -377,7 +386,6 @@ class Scraper:
             for car in cars:
                 if car.get("Price", 0) <= 0: continue
                 
-                # 렌트/리스 완벽 차단!
                 sell_type = str(car.get("SellType", ""))
                 if "렌트" in sell_type or "리스" in sell_type: continue
                 if car.get("LeaseType"): continue 
@@ -426,7 +434,8 @@ class Scraper:
                 else:
                     consecutive_failures = 0
                     
-                time.sleep(random.uniform(0.05, 0.15))
+                # 🔥 울트라 터보 모드 (0.01초 ~ 0.05초)
+                time.sleep(random.uniform(0.01, 0.05))
 
             status_text.text("3/3: 스캔 완료. 스마트 데이터 취합 중...")
             raw_df = pd.DataFrame(car_data_list)
@@ -457,7 +466,8 @@ class Scraper:
             status_text.text(f"♻️ 실패 매물 원터치 재스캔... ({i+1}/{total_cars}대)")
             progress_bar.progress(int(100 * (i + 1) / total_cars))
             
-            time.sleep(random.uniform(0.1, 0.25)) 
+            # 🔥 재스캔도 울트라 터보
+            time.sleep(random.uniform(0.05, 0.1)) 
             
             c_id = st.session_state.scan_data.loc[idx, '_carid']
             res = Scraper.fetch_car_detail(session, c_id)
@@ -617,7 +627,6 @@ if not filtered_df.empty:
         current_f_year = st.sidebar.text_input("연식 검색 (예: 24-05)")
         if current_f_year: filtered_df = filtered_df[filtered_df['연식'].astype(str).str.contains(current_f_year)]
         
-        # 🔥 주행거리 필터 분리! (filtered_df 자체를 깎아내지 않고 슬라이더 값만 가져옵니다)
         if "주행거리" in filtered_df.columns:
             filtered_df["주행거리"] = pd.to_numeric(filtered_df["주행거리"], errors='coerce').fillna(0)
             max_mil = int(filtered_df["주행거리"].max()) if not filtered_df.empty else 0
@@ -635,19 +644,18 @@ st.sidebar.markdown("---")
 # ==========================================
 st.sidebar.markdown("### 📝 장부 간편 저장 (자동 계산)")
 
-# 1. 상단 기본 정보
-l_car_num = st.sidebar.text_input("차량번호 (필수)")
-l_mil = st.sidebar.number_input("주행거리 (km)", min_value=0, step=1000)
+if st.session_state.save_success:
+    st.sidebar.success(f"✅ {st.session_state.saved_car_num} 장부 및 구글시트 저장 완료!")
+    st.session_state.save_success = False
+
+l_car_num = st.sidebar.text_input("차량번호 (필수)", key="l_car_num")
+l_mil = st.sidebar.number_input("주행거리 (km)", min_value=0, step=1000, key="l_mil")
 
 st.sidebar.markdown("---")
 
-# 2. 계산을 위한 핵심 타점 정보 (요청하신 순서대로 배치)
-l_sell_price = st.sidebar.number_input("판매가 (예상, 만원)", min_value=0, step=10, value=0)
+l_sell_price = st.sidebar.number_input("판매가 (예상, 만원)", min_value=0, step=10, key="l_sell_price")
+l_ext_repair = st.sidebar.number_input("외판 수리 갯수", min_value=0, step=1, format="%d", key="l_ext_repair")
 
-# 🔥 외판수리 값은 소수점 없는 정수(format="%d")로!
-l_ext_repair = st.sidebar.number_input("외판 수리 갯수", min_value=0, step=1, value=0, format="%d")
-
-# 3. 매입 경로 (이전 선택을 자동으로 기억)
 route_options = ["셀프(기본)", "제로", "개인"]
 def update_route():
     st.session_state.purchase_route = st.session_state._route_selector
@@ -656,11 +664,10 @@ l_route = st.sidebar.radio("매입 경로", route_options, index=route_options.i
 
 l_manual_fee = 0
 if l_route == "개인":
-    l_manual_fee = st.sidebar.number_input("매입 수수료 (직접입력, 만원)", min_value=0, step=1, value=0)
+    l_manual_fee = st.sidebar.number_input("매입 수수료 (직접입력, 만원)", min_value=0, step=1, key="l_manual_fee")
 
 l_margin = st.sidebar.number_input("목표 마진 (만원)", min_value=0, step=10, value=120)
 
-# 🔥 4. 권장 낙찰가 실시간 역산 로직
 name_val = st.session_state.f_name if st.session_state.f_name != "전체" else ""
 is_light_car = any(x in name_val for x in ["모닝", "레이", "스파크", "마티즈", "캐스퍼", "티코"])
 
@@ -668,7 +675,6 @@ selling_fee = l_sell_price * 0.007
 misc_cost = 15
 ext_cost = l_ext_repair * 13
 
-# 1차 타점 = 판매가 - 판매수수료 - 제경비 - 수리비 - 목표마진
 first_target = l_sell_price - selling_fee - misc_cost - ext_cost - l_margin
 purchase_fee = 0
 
@@ -689,20 +695,30 @@ elif l_route == "제로":
 elif l_route == "개인":
     purchase_fee = l_manual_fee
 
-# 최종 매입가 (1차 타점 - 매입수수료)
-final_target = first_target - purchase_fee
+final_target_raw = first_target - purchase_fee
+final_target = int(math.floor(final_target_raw))
 
-# 5. 계산 결과 실시간 출력
 st.sidebar.markdown("---")
-if l_sell_price > 0:
-    st.sidebar.success(f"**✅ 권장 입찰가(매입가): `{final_target:,.1f}` 만원**\n\n(수수료: {purchase_fee}만 / 수리비: {ext_cost}만)")
+if st.session_state.l_sell_price > 0:
+    html_content = f"""
+    <div style="background-color: #d1e7dd; border: 1px solid #badbcc; padding: 15px; border-radius: 8px; color: #0f5132; margin-bottom: 15px;">
+        <div style="font-size: 1.1em; font-weight: bold; margin-bottom: 5px;">✅ 권장 입찰가(매입가)</div>
+        <div style="font-size: 2.3em; font-weight: 900; text-align: right; margin-bottom: 15px; color: #0a3622;">
+            {final_target:,} <span style="font-size: 0.6em; font-weight: normal;">만원</span>
+        </div>
+        <div style="font-size: 0.9em; text-align: right; color: #146c43;">
+            (수수료: {purchase_fee:g}만 / 수리비: {ext_cost:g}만)
+        </div>
+    </div>
+    """
+    st.sidebar.markdown(html_content, unsafe_allow_html=True)
 else:
     st.sidebar.info("💡 판매가를 입력하시면 매입가가 자동 계산됩니다.")
 
-l_memo = st.sidebar.text_area("특이사항 / 메모", height=80)
+l_memo = st.sidebar.text_area("특이사항 / 메모", height=80, key="l_memo")
 
 if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container_width=True):
-    if not l_car_num:
+    if not st.session_state.l_car_num:
         st.sidebar.error("⚠️ 차량번호 필수")
     else:
         brand_val = st.session_state.f_brand if st.session_state.f_brand != "전체" else ""
@@ -711,15 +727,15 @@ if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container
 
         new_record = {
             '등록일': datetime.now().strftime("%y-%m-%d"), 
-            '차량번호': l_car_num, 
+            '차량번호': st.session_state.l_car_num, 
             '제조사': brand_val,
             '차량명': name_val,
             '세부모델': sub_val,
             '연식': year_val,
-            '주행거리': f"{l_mil} km" if l_mil > 0 else "", 
-            '매입가': round(final_target, 1), 
-            '판매가': l_sell_price, 
-            '특이사항': f"[{l_route}] " + l_memo
+            '주행거리': f"{st.session_state.l_mil} km" if st.session_state.l_mil > 0 else "", 
+            '매입가': final_target, 
+            '판매가': st.session_state.l_sell_price, 
+            '특이사항': f"[{st.session_state.purchase_route}] " + st.session_state.l_memo
         }
         st.session_state.my_ledger_data = pd.concat([st.session_state.my_ledger_data, pd.DataFrame([new_record])], ignore_index=True)
         st.session_state.my_ledger_data.to_csv(LEDGER_FILE, index=False, encoding='utf-8-sig')
@@ -728,7 +744,18 @@ if st.sidebar.button("💾 내 장부 및 구글시트에 저장", use_container
             requests.post(WEBHOOK_URL, json=new_record, timeout=5)
         except: pass
 
-        st.sidebar.success(f"✅ {l_car_num} 장부 및 구글시트 저장 완료!")
+        st.session_state.save_success = True
+        st.session_state.saved_car_num = st.session_state.l_car_num
+        
+        st.session_state.l_car_num = ""
+        st.session_state.l_mil = 0
+        st.session_state.l_sell_price = 0
+        st.session_state.l_ext_repair = 0
+        if 'l_manual_fee' in st.session_state:
+            st.session_state.l_manual_fee = 0
+        st.session_state.l_memo = ""
+        
+        st.rerun()
 
 st.markdown("##### 🏅 J-PRO : Advanced Auto Valuation System")
 
@@ -755,7 +782,6 @@ with tab_scan:
                     **{'font-size': '1.1em', 'font-weight': 'bold'}
                 ).format(precision=0)
 
-                # 🔥 표(List)는 주행거리 슬라이더에 깎이지 않고 모두 보여줍니다!
                 event = st.dataframe(
                     styled_df,
                     column_config={
@@ -822,7 +848,6 @@ with tab_scan:
         st.markdown("---")
         st.markdown("### 📊 현재 조건 시세 분석")
         
-        # 🔥 시세 분석기(차트 및 통계)는 주행거리 슬라이더에 맞게 좁혀서 보여줍니다!
         chart_base = filtered_df.copy()
         if current_f_mil > 0:
             chart_base = chart_base[chart_base['주행거리'] <= current_f_mil]
@@ -896,7 +921,6 @@ with tab_scan:
                     sel_row = filtered_df.iloc[selected_rows_for_chart[0]]
                     sel_km = pd.to_numeric(sel_row['주행거리'], errors='coerce')
                     sel_price = pd.to_numeric(sel_row['판매가'], errors='coerce')
-                    # 선택된 차량이 차트 기준 안에 들어올 때만 별표 표시
                     if pd.notna(sel_km) and pd.notna(sel_price) and (current_f_mil == 0 or sel_km <= current_f_mil):
                         fig.add_trace(go.Scatter(
                             x=[sel_km], y=[sel_price],
