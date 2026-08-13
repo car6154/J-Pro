@@ -20,7 +20,7 @@ DB_FILE = "jpro_db.csv"
 LEDGER_FILE = "my_car_ledger.csv"
 INVENTORY_FILE = "autoplus_inventory.csv" 
 COOKIE_FILE = "encar_cookie.txt" 
-WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyyPeTsI9-TK9niAcxw8c21itSzplbzCi0jXLb61fTlcanCEnJmlC9mjwWMOH8yZfbl/exec"
+WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyLelvMC8GhtFsC4E1ZcTQc7HgyT30JZUF7pkQ2ZmYQ8NJZq1TypMuHUD3BH6ZX2cm3/exec"
 
 def load_cookie():
     if os.path.exists(COOKIE_FILE):
