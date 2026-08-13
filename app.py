@@ -627,6 +627,10 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 📝 장부 간편 저장")
 with st.sidebar.form("quick_ledger_sidebar", clear_on_submit=True):
     l_car_num = st.text_input("차량번호 (필수)")
+    
+    # 🔥 1. 주행거리(km) 수기 입력 필드 신규 추가! 
+    l_mil = st.number_input("주행거리 (km)", min_value=0, step=1000)
+    
     l_buy_price = st.number_input("매입가 (만원)", min_value=0, step=10)
     l_sell_price = st.number_input("판매가 (만원)", min_value=0, step=10)
     l_memo = st.text_area("특이사항 / 메모", height=80)
@@ -641,7 +645,6 @@ if submit_btn:
         name_val = st.session_state.f_name if st.session_state.f_name != "전체" else ""
         sub_val = st.session_state.f_sub if st.session_state.f_sub != "전체" else ""
         year_val = current_f_year if current_f_year else ""
-        mil_val = f"{current_f_mil}km 이하" if current_f_mil > 0 else ""
 
         new_record = {
             '등록일': datetime.now().strftime("%y-%m-%d"), 
@@ -650,7 +653,10 @@ if submit_btn:
             '차량명': name_val,
             '세부모델': sub_val,
             '연식': year_val,
-            '주행거리': mil_val,
+            
+            # 🔥 수기로 입력한 주행거리가 장부에 바로 찍히도록 변경
+            '주행거리': f"{l_mil} km" if l_mil > 0 else "", 
+            
             '매입가': l_buy_price, 
             '판매가': l_sell_price, 
             '특이사항': l_memo
@@ -698,7 +704,10 @@ with tab_scan:
                         "차량명": st.column_config.TextColumn("차량명", width=110),
                         "세부모델": st.column_config.TextColumn("세부모델", width=140),
                         "연식": st.column_config.TextColumn("연식", width=50),
-                        "주행거리": st.column_config.NumberColumn("주행거리", format="%d km", width=70),
+                        
+                        # 🔥 2. 주행거리 폭을 강제로 묶어두던 width=70을 없애고 자동 맞춤(Auto-fit) 적용!
+                        "주행거리": st.column_config.NumberColumn("주행거리", format="%d km"), 
+                        
                         "판매가": st.column_config.NumberColumn("판매가", format="%d 만", width=60),
                         "재고": st.column_config.TextColumn("재고", width=50),
                         "사고유무": st.column_config.TextColumn("사고유무", width=180),
